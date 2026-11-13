@@ -154,6 +154,7 @@ if (-not $NoBlockLog) {
   New-Item -ItemType Directory -Force $CegDataDir | Out-Null
   $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   icacls $CegDataDir /setowner '*S-1-5-32-544' | Out-Null
+  icacls $CegDataDir /reset | Out-Null   # drop explicit ACEs from earlier versions (grant:r only replaces the named SIDs)
   icacls $CegDataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*${me}:(OI)(CI)RX" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'icacls failed' }
   $query = "&lt;QueryList&gt;&lt;Query Id=`"0`" Path=`"Security`"&gt;&lt;Select Path=`"Security`"&gt;*[System[EventID=5157]] and *[EventData[Data[@Name='Direction']='%%14593']]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;"
