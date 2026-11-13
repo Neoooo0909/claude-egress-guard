@@ -1,0 +1,29 @@
+# Domains that must ALWAYS leave through your proxy exit — never DIRECT.
+# 必须始终经代理出口、绝不能直连的域名（按后缀匹配，一行一个）。
+#
+# This file is the single source of truth: tools/gen_proxy_rules.py turns it into
+# rule snippets for mihomo/Clash, sing-box, xray/v2rayN and Surge.
+# 本文件是唯一来源：tools/gen_proxy_rules.py 会据此生成各代理软件的规则片段。
+
+# Anthropic first-party (API, console, OAuth, MCP proxy, claude.ai, Claude Code docs/downloads)
+anthropic.com
+claude.ai
+claude.com
+claudeusercontent.com
+claudemcpcontent.com
+
+# Third parties that receive Claude telemetry / auth / billing traffic.
+# They are not Anthropic, but the data lands in Anthropic-owned accounts.
+datadoghq.com
+browser-intake-us5-datadoghq.com
+growthbook.io
+statsigapi.net
+intercom.io
+intercomcdn.com
+stripe.com
+stripe.network
+
+# Claude Code native installer / auto-updater binaries are served from a Google Cloud
+# Storage bucket. Routing the whole storage.googleapis.com suffix through the exit is the
+# only way to cover it with domain rules (it also affects other GCS downloads — harmless).
+storage.googleapis.com

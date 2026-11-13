@@ -1,0 +1,13 @@
+# Anthropic, PBC — prefixes announced by AS399358 (source: RIPEstat).
+# api.anthropic.com, console.anthropic.com, mcp-proxy.anthropic.com, claude.ai,
+# platform.claude.com and code.claude.com all resolve into 160.79.104.0/23.
+# Nothing on your machine should ever connect to these directly — only your
+# remote proxy exit should. The firewall rules block them for EVERY process.
+#
+# The 64:ff9b:: lines are the NAT64 forms (64:ff9b::/96 + each IPv4 prefix) for IPv6-only networks.
+# Refresh: HTTPS_PROXY=<your proxy> python3 tools/update_anthropic_ranges.py --write,
+# then re-run the installer.
+160.79.104.0/23
+2607:6bc0::/48
+2607:6bc0:11::/48
+64:ff9b::a04f:6800/119

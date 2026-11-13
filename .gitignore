@@ -1,0 +1,10 @@
+# Never commit personal data: your exit IPs, generated IP lists, caches, logs
+expected-egress.txt
+domestic-ipv4.txt
+delegated-apnic-latest
+*.pcap
+*.log
+events.jsonl*
+__pycache__/
+*.pyc
+.DS_Store

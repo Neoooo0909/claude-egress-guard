@@ -1,0 +1,7 @@
+# Copy to ~/.config/claude-egress-guard/expected-egress.txt and list the exit IP(s)
+# that Anthropic is SUPPOSED to see (i.e. your proxy's exit). One per line, "#" = comment.
+# 复制到 ~/.config/claude-egress-guard/expected-egress.txt，写上 Anthropic 应该看到的出口 IP。
+#
+# The value below is a documentation address (RFC 5737) — replace it with yours.
+# 下面是文档专用示例地址，请换成你自己的出口 IP。
+203.0.113.10

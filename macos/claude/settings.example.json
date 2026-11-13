@@ -1,0 +1,29 @@
+{
+  "env": {
+    "HTTP_PROXY": "http://127.0.0.1:7890",
+    "HTTPS_PROXY": "http://127.0.0.1:7890",
+    "http_proxy": "http://127.0.0.1:7890",
+    "https_proxy": "http://127.0.0.1:7890",
+    "NO_PROXY": "localhost,127.0.0.1,::1",
+    "no_proxy": "localhost,127.0.0.1,::1",
+    "NODE_USE_ENV_PROXY": "1"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/claude-egress-guard/guard/egress_guard.py gate",
+            "timeout": 20,
+            "statusMessage": "egress check"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/claude-egress-guard/macos/statusline/statusline-egress.sh"
+  }
+}
