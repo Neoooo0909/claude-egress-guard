@@ -35,7 +35,7 @@ Works with mihomo/Clash (Clash Verge Rev, ClashX Meta, FlClash), sing-box, xray/
 | **L2 proxy rules** | Claude domains always go to ONE policy that contains only your fixed exit — never `DIRECT` | `tools/gen_proxy_rules.py` generates snippets per client | same |
 | **L3 kill switch** | When the proxy breaks, traffic fails instead of going direct | pf: ① **no process** may reach Anthropic's address space directly; ② full mode: your user may not reach any foreign IP directly | Firewall: ① **no program** may reach Anthropic's ranges directly; ② `claude.exe` may only reach loopback / LAN / Tailscale |
 | **L4 pre-prompt gate** | Before a prompt is sent, verify the exit Anthropic sees is expected (a measurement up to 60 s old is reused); block if unsure | `UserPromptSubmit` hook | same |
-| **Monitoring** | Exit IP and anomaly counters at a glance | status line + resident sampler (direct connections in Claude Code process trees) + pf counters | gate + status text |
+| **Monitoring** | Exit IP and anomaly counters at a glance; "what was blocked" afterwards | status line + resident sampler (direct connections in Claude Code process trees) + pf counters + **block log** (target, domain, process of every block) | gate + status text + **block log** (firewall audit events) |
 
 Principles:
 
@@ -106,6 +106,8 @@ python3 tools/gen_cn_ipv4.py                     # domestic IPv4 list (run as yo
 sudo sh macos/pf/install.sh --mode full --proxy-url http://127.0.0.1:7890
 ```
 
+The installer also sets up the [block log](#what-was-blocked) (needs `/usr/bin/python3` from the Xcode Command Line Tools; skip with `--no-blocklog`).
+
 Then merge `hooks` and `statusLine` from [macos/claude/settings.example.json](macos/claude/settings.example.json) into `~/.claude/settings.json` and **start a new Claude Code session** (hooks and managed settings load at startup).
 
 ### Windows
@@ -118,6 +120,8 @@ cd "$HOME\claude-egress-guard\windows"
 .\install.ps1 -ProxyUrl http://127.0.0.1:10808      # v2rayN default 10808; add -ClaudeExe <path> if claude.exe lives elsewhere
 .\test-firewall.ps1 -ProxyUrl http://127.0.0.1:10808
 ```
+
+`install.ps1` also sets up the [block log](#what-was-blocked) (skip with `-NoBlockLog`). It enables failure auditing of "Filtering Platform Connection" and raises the Security log to at least 128 MB — that audit also records unrelated inbound drops (e.g. system components that UWP loopback isolation keeps away from the local proxy port, possibly dozens per minute), and the larger log keeps them from pushing out other security events. Uninstall restores both to their pre-install state.
 
 Gate hook (full Python path, forward slashes):
 
@@ -149,6 +153,7 @@ In this order: **confirm the rules are active before any direct test** — if th
 | 7. Gate | `python3 guard/egress_guard.py gate; echo $?` | `0`; and `2` for `env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy python3 guard/egress_guard.py gate; echo $?` |
 | 8. Status line | `python3 guard/egress_guard.py status` | `exit 203.0.113.10 US \| anomalies today 0` |
 | 9. Which hosts Claude Code contacts | `python3 tools/probe_hosts.py` (zero-leak probe, see its docstring) | all covered by the domain list or Anthropic's ranges |
+| 10. Block log | a few seconds after checks 4/5: `./macos/pf/blocked.py` | lists the `160.79.104.10` (marked `! Anthropic`) / `github.com` attempts, process `curl` |
 
 On Windows, `test-firewall.ps1` only runs its direct test after confirming that the rule exists, is enabled and the firewall is on for every profile, and it checks that the rule's `claude.exe` path is the one you actually run.
 
@@ -162,16 +167,35 @@ Status line legend:
 - `host blocked N`: all packets pf refused machine-wide (includes unrelated apps; not an alert).
 - Details: `~/.cache/claude-egress-guard/events.jsonl`.
 
+## What was blocked
+
+Counters say how much was blocked; the block log says what:
+
+```bash
+./macos/pf/blocked.py            # today: totals, top sources, last 10 records
+./macos/pf/blocked.py -d 3 -n 30 # last 3 days, 30 records
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:ProgramFiles\ClaudeEgressGuard\blocked.ps1"
+```
+
+Each record has time, packet count, kind (`anthropic` = Anthropic's address space; macOS `direct` = your user went direct to a foreign address in full mode; Windows `claude` = `claude.exe` went direct to a public address), destination IP/port, domain, process and executable path (never the command line arguments — they may contain secrets).
+
+- **macOS**: the block rules carry `log`; the daemon `io.github.claude-egress-guard.blocklog` reads `pflog0` (records of this project's anchor only) and writes `/Library/Application Support/ClaudeEgressGuard/blocked.jsonl` (readable by the admin group, rotated at 5 MB). Both tcpdumps drop to user `nobody` right after opening their device. pf logs carry no process id, so the process is attributed on a best-effort basis: TCP through the RST pf returns to the program (pktap tags the receiving process), UDP through `lsof` on the local port right after the block. Connections that close immediately may stay unattributed — the domain usually tells you enough. IPv6 RSTs are captured too, but this was only tested on IPv4 networks. Domains come only from captured DNS answers that match a captured query; otherwise just the IP is logged — the daemon does no PTR lookups, which would send every blocked foreign address to your DNS server in clear text.
+- **Windows**: the SYSTEM task `ClaudeEgressGuard-BlockLog` runs on every outbound block audit event (5157) and keeps only the events of this project's rules (matched by WFP filter run-time id, so other software's block rules do not leak in; if the filter list cannot be read, the batch waits for the next run instead of being logged unchecked), writing `%ProgramData%\ClaudeEgressGuard\blocked.jsonl`. Domains come from the local DNS client cache only, no reverse lookups.
+
+Typical entries unrelated to Claude: system services that ignore the system proxy (e.g. Safari's Safe Browsing update first tries Apple's privacy relays over QUIC, is refused, retries and eventually succeeds through the proxy or Apple's own network). Anything whose kind is not `anthropic` is the kill switch blocking another program's direct connection, as designed.
+
 ## Uninstall
 
 ```bash
-sudo sh macos/pf/uninstall.sh                 # macOS: stop daemon, clear rules, restore managed settings to their pre-install state
+sudo sh macos/pf/uninstall.sh                 # macOS: stop daemons (incl. block log), clear rules, restore managed settings to their pre-install state
 ```
 ```powershell
 # Windows: elevated PowerShell
 Set-ExecutionPolicy -Scope Process Bypass
 cd "$HOME\claude-egress-guard\windows"
-.\uninstall.ps1                 # add -RemoveUserEnv to also delete the user environment variables
+.\uninstall.ps1                 # also removes the block log and restores the audit setting and Security log size; add -RemoveUserEnv to also delete the user environment variables
 ```
 Then remove the line from `~/.zshrc` and the hook from `settings.json`.
 
@@ -211,7 +235,7 @@ The kill switch (L3) and the gate (L4) are still needed.
 
 - Network egress only. Time zone, language, payment method, account behaviour and other non-IP signals are out of scope.
 - Refresh Anthropic's ranges now and then: `HTTPS_PROXY=<proxy> python3 tools/update_anthropic_ranges.py --write` (it also lists endpoints outside those ranges, which rely on proxy rules only). **Re-run `install.sh` / `install.ps1` afterwards** so the firewall uses the new ranges.
-- The resident sampler polls every 0.5 s; shorter connections can be missed; blocked attempts only show up as pf counters.
+- The resident sampler polls every 0.5 s; shorter connections can be missed; blocked attempts are recorded by the block log (process attribution is best effort, see [What was blocked](#what-was-blocked)).
 - macOS full mode requires proxy cores and VPN extensions not to run as your user (the installer checks who listens on the proxy port and looks for VPN network extensions, and refuses otherwise).
 - The gate hook blocks only on exit code 2. A broken hook command (e.g. `python3` not found, exit code 127) is treated by Claude Code as a non-blocking error and the prompt **goes through**. After installing, run check 7 of "Verify" to confirm the gate returns `2` without proxy variables. Keep the hook `timeout` at 20 s or more: the gate itself may take up to 15 s, and a hook timeout is most likely treated as non-blocking too (the prompt goes through).
 

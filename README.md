@@ -35,7 +35,7 @@
 | **L2 代理规则** | Claude 相关域名固定走一个只含你固定出口的策略组，绝不含 `DIRECT` | `tools/gen_proxy_rules.py` 生成各客户端规则片段 | 同左 |
 | **L3 断网保护** | 代理出问题时断网而不是直连 | pf：①**所有进程**禁止直连 Anthropic 网段；②完整模式：你的用户直连境外一律拒绝 | 防火墙：①**所有程序**禁止直连 Anthropic 网段；②`claude.exe` 只准连本机/局域网/Tailscale |
 | **L4 提问前门禁** | 发消息前确认 Anthropic 看到的出口是预期 IP（60 秒内测过就复用结果），确认不了就拦 | `UserPromptSubmit` 钩子 | 同左 |
-| **监测** | 随时看到出口 IP 与异常次数 | 状态栏 + 常驻采样（Claude Code 进程树的直连）+ pf 拦截计数 | 门禁 + 状态栏文字 |
+| **监测** | 随时看到出口 IP 与异常次数；事后查得到“拦了什么” | 状态栏 + 常驻采样（Claude Code 进程树的直连）+ pf 拦截计数 + **拦截日志**（每次拦截的目标、域名、进程） | 门禁 + 状态栏文字 + **拦截日志**（防火墙审计事件） |
 
 关键原则：
 
@@ -104,6 +104,8 @@ python3 tools/gen_cn_ipv4.py                     # 生成国内 IPv4 表（以�
 sudo sh macos/pf/install.sh --mode full --proxy-url http://127.0.0.1:7890
 ```
 
+安装脚本默认同时装上[拦截日志](#查看拦了什么)（需要 Xcode 命令行工具里的 `/usr/bin/python3`；加 `--no-blocklog` 跳过）。
+
 然后把 [macos/claude/settings.example.json](macos/claude/settings.example.json) 里的 `hooks` 与 `statusLine` 合并进 `~/.claude/settings.json`，**重开 Claude Code 会话**（钩子与托管设置只在启动时加载）。
 
 ### Windows
@@ -116,6 +118,8 @@ cd "$HOME\claude-egress-guard\windows"
 .\install.ps1 -ProxyUrl http://127.0.0.1:10808      # v2rayN 默认 10808；claude.exe 不在默认位置时加 -ClaudeExe <路径>
 .\test-firewall.ps1 -ProxyUrl http://127.0.0.1:10808
 ```
+
+`install.ps1` 默认同时装上[拦截日志](#查看拦了什么)（加 `-NoBlockLog` 跳过）。它会打开“筛选平台连接”的失败审计，并把安全日志上限调到至少 128 MB——这项审计也会记下与本项目无关的入站拦截（例如被 UWP 回环隔离挡住、连不上本机代理端口的系统组件，可能每分钟几十条），调大是为了不把其它安全事件冲掉。卸载时两项都按首次安装前的状态还原。
 
 门禁钩子（`settings.json` 里写 Python 的完整路径，用正斜杠）：
 
@@ -147,6 +151,7 @@ cd "$HOME\claude-egress-guard\windows"
 | 7. 门禁 | `python3 guard/egress_guard.py gate; echo $?` | 正常 `0`；`env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy python3 guard/egress_guard.py gate; echo $?` 为 `2` |
 | 8. 状态栏 | `python3 guard/egress_guard.py status` | `exit 203.0.113.10 US \| anomalies today 0` |
 | 9. Claude Code 走了哪些主机 | `python3 tools/probe_hosts.py`（零泄漏探针，见脚本说明） | 全部在域名清单或 Anthropic 网段内 |
+| 10. 拦截日志 | 第 4/5 步之后几秒：`./macos/pf/blocked.py` | 列出刚才被拦的 `160.79.104.10`（标 `! Anthropic`）/ `github.com`，进程为 `curl` |
 
 Windows 上 `test-firewall.ps1` 会先确认规则存在、已启用、防火墙各配置文件都开着，才做直连测试，并核对规则里的 `claude.exe` 路径是否就是你在用的那个。
 
@@ -160,16 +165,35 @@ Windows 上 `test-firewall.ps1` 会先确认规则存在、已启用、防火墙
 - `host blocked N`：pf 拦下的全机包数（含与 Claude 无关的程序，不计入告警）。
 - 明细在 `~/.cache/claude-egress-guard/events.jsonl`。
 
+## 查看拦了什么
+
+计数只告诉你“拦了多少”，拦截日志告诉你“拦了谁”：
+
+```bash
+./macos/pf/blocked.py            # 今天：总数、按来源排行、最近 10 条
+./macos/pf/blocked.py -d 3 -n 30 # 最近 3 天，列 30 条
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:ProgramFiles\ClaudeEgressGuard\blocked.ps1"
+```
+
+每条记录有时间、包数、类别（`anthropic` = 直连 Anthropic 网段；macOS 的 `direct` = 完整模式下你的用户直连境外；Windows 的 `claude` = `claude.exe` 直连公网）、目标 IP/端口、域名、进程与可执行文件路径（不记命令行参数，参数里可能有密钥）。
+
+- **macOS**：拦截规则带 `log`，守护进程 `io.github.claude-egress-guard.blocklog` 读 `pflog0`（只收本项目锚点的记录），写 `/Library/Application Support/ClaudeEgressGuard/blocked.jsonl`（只有 admin 组可读，5 MB 轮转）。两个 tcpdump 打开设备后即降为 `nobody` 身份解析数据包。pf 的日志里没有进程号，所以进程是“尽力”归属的：TCP 靠 pf 回给程序的 RST（pktap 会标出接收它的进程），UDP 靠拦截瞬间按本地端口查 `lsof`；连接被拒后立刻关闭的，可能对不上进程，看域名一般就够判断。IPv6 的 RST 也在抓取范围内，但作者只在 IPv4 网络上实测过。域名只来自同时抓到、且能对上查询的 DNS 应答；对不上就只记 IP——守护进程不做 PTR 反查，免得把每个被拦的境外地址明文发给 DNS 服务器。
+- **Windows**：计划任务 `ClaudeEgressGuard-BlockLog`（SYSTEM）在每次出站拦截审计事件（5157）时运行，只收本项目规则产生的事件（按 WFP 过滤器的运行时 ID 区分，别的软件的拦截规则不会混进来；读不到过滤器列表时这一批留到下次，不会不加区分地记下），写 `%ProgramData%\ClaudeEgressGuard\blocked.jsonl`。域名只取本机 DNS 客户端缓存，不做反查。
+
+日志里常见的“与 Claude 无关”的条目：不走系统代理的系统服务（例如 Safari 的安全浏览更新先用 QUIC 连苹果的隐私中继，被拒后重试，最终经代理或苹果自己的网段成功）。只要类别不是 `anthropic`，就说明断网保护在按设计拦截别的程序的直连。
+
 ## 卸载
 
 ```bash
-sudo sh macos/pf/uninstall.sh                 # macOS：停守护、清规则、把托管设置还原到首次安装前
+sudo sh macos/pf/uninstall.sh                 # macOS：停守护（含拦截日志）、清规则、把托管设置还原到首次安装前
 ```
 ```powershell
 # Windows：管理员 PowerShell
 Set-ExecutionPolicy -Scope Process Bypass
 cd "$HOME\claude-egress-guard\windows"
-.\uninstall.ps1                 # 加 -RemoveUserEnv 可同时删除用户环境变量
+.\uninstall.ps1                 # 同时移除拦截日志并还原审计设置与安全日志大小；加 -RemoveUserEnv 可同时删除用户环境变量
 ```
 再删掉 `~/.zshrc` 里的那一行和 `settings.json` 里的钩子即可。
 
@@ -209,7 +233,7 @@ cd "$HOME\claude-egress-guard\windows"
 
 - 只处理网络出口。时区、系统语言、支付方式、账号行为等非 IP 信号不在范围内。
 - Anthropic 网段需要定期更新：`HTTPS_PROXY=<代理> python3 tools/update_anthropic_ranges.py --write`（它也会提示哪些端点不在网段内、只能依赖代理规则）。**更新后要重新运行 `install.sh` / `install.ps1`**，防火墙才会用上新网段。
-- 常驻采样器按 0.5 秒采样，存活时间更短的连接可能漏掉；被 pf 拦下的直连尝试只体现在计数里。
+- 常驻采样器按 0.5 秒采样，存活时间更短的连接可能漏掉；被 pf 拦下的直连尝试由拦截日志记录（进程归属是尽力而为，见[查看拦了什么](#查看拦了什么)）。
 - macOS 完整模式要求代理内核与 VPN 扩展不以你的用户身份运行（安装脚本会检查监听代理端口的进程属主与 VPN 网络扩展，不满足就拒绝）。
 - 门禁钩子只在退出码为 2 时拦截。钩子命令本身配错（例如找不到 `python3`，退出码 127）会被 Claude Code 当作普通错误而**放行**。装好后请按“验证”第 7 步确认去掉代理变量时门禁返回 `2`。钩子的 `timeout` 不要低于 20 秒：门禁自身最长要 15 秒，而钩子超时很可能也按非阻断处理、直接放行。
 

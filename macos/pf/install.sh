@@ -14,11 +14,15 @@
 #                                (default: ~/.config/claude-egress-guard/domestic-ipv4.txt of that user)
 #   --no-apple                   full mode: do NOT allow direct traffic to Apple's 17.0.0.0/8
 #   --force                      skip the "proxy core must not run as that user" safety checks
+#   --no-blocklog                do not install the block log daemon (records what pf refused;
+#                                view with ./macos/pf/blocked.py). Needs /usr/bin/python3 (Xcode CLT)
 #
 # Idempotent: re-running replaces the rules. Undo everything with: sudo sh macos/pf/uninstall.sh
 set -eu
 
 die() { echo "error: $*" >&2; exit 1; }
+# launchctl bootout can return before the job has exited: wait (max ~5 s) until it is gone
+wait_gone() { i=0; while launchctl print "system/$1" >/dev/null 2>&1 && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done; }
 [ "$(uname -s)" = Darwin ] || die "macOS only"
 [ "$(id -u)" = 0 ] || die "run with sudo: sudo sh $0 $*"
 
@@ -27,11 +31,12 @@ ROOT=$(cd "$SRC/../.." && pwd)
 DIR="/Library/Application Support/ClaudeEgressGuard"
 ANCHOR="com.apple/250.ClaudeEgressGuard"
 LABEL="io.github.claude-egress-guard.pf"
+BL_LABEL="io.github.claude-egress-guard.blocklog"
 MS_DIR="/Library/Application Support/ClaudeCode"
 MS="$MS_DIR/managed-settings.json"
 
 MODE=""; TUID="${SUDO_UID:-}"; DOMESTIC=""; EXTRA4=", 17.0.0.0/8"
-PROXY_URL=""; NO_PROXY_LIST="localhost,127.0.0.1,::1"; FORCE=0
+PROXY_URL=""; NO_PROXY_LIST="localhost,127.0.0.1,::1"; FORCE=0; BLOCKLOG=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="$2"; shift 2 ;;
@@ -41,6 +46,7 @@ while [ $# -gt 0 ]; do
     --proxy-url) PROXY_URL="$2"; shift 2 ;;
     --no-proxy) NO_PROXY_LIST="$2"; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --no-blocklog) BLOCKLOG=0; shift ;;
     *) die "unknown option $1" ;;
   esac
 done
@@ -124,7 +130,17 @@ install -m 644 -o root -g wheel "$TMP/rules.conf" "$DIR/rules.conf"
 [ "$MODE" = full ] && install -m 644 -o root -g wheel "$TMP/domestic-ipv4.txt" "$DIR/domestic-ipv4.txt"
 install -m 755 -o root -g wheel "$SRC/apply.sh" "$DIR/apply.sh"
 install -m 644 -o root -g wheel "$SRC/$LABEL.plist" "/Library/LaunchDaemons/$LABEL.plist"
-echo "[2/4] installed to $DIR"
+HAVE_PY=0
+xcode-select -p >/dev/null 2>&1 && /usr/bin/python3 -I -c 'import json' >/dev/null 2>&1 && HAVE_PY=1
+if [ "$BLOCKLOG" -eq 1 ] && [ "$HAVE_PY" -eq 0 ]; then
+  echo "warning: /usr/bin/python3 unavailable (xcode-select --install) - block log NOT installed" >&2
+  BLOCKLOG=0
+fi
+if [ "$BLOCKLOG" -eq 1 ]; then
+  install -m 644 -o root -g wheel "$SRC/blocklog.py" "$DIR/blocklog.py"
+  install -m 644 -o root -g wheel "$SRC/$BL_LABEL.plist" "/Library/LaunchDaemons/$BL_LABEL.plist"
+fi
+echo "[2/4] installed to $DIR$( [ "$BLOCKLOG" -eq 1 ] && echo ' (with block log)')"
 
 # Claude Code managed settings: highest precedence; tools that rewrite ~/.claude/settings.json
 # (provider switchers) cannot override them. Merge, never clobber. The ORIGINAL state is recorded
@@ -160,13 +176,25 @@ fi
 # Replace the rules right now (flush + load via apply.sh, which also enables pf), THEN (re)start
 # the daemon — so a failing bootstrap cannot leave the anchor empty
 launchctl bootout "system/$LABEL" 2>/dev/null || true
+wait_gone "$LABEL"
 /sbin/pfctl -a "$ANCHOR" -F rules 2>/dev/null || true
 /sbin/pfctl -a "$ANCHOR" -F Tables 2>/dev/null || true
 sh "$DIR/apply.sh"
 launchctl bootstrap system "/Library/LaunchDaemons/$LABEL.plist" \
   || echo "warning: launchctl bootstrap failed — rules are loaded now but will not be re-applied after a reboot" >&2
+# Block log daemon: (re)start it, or remove a previous one when --no-blocklog was given
+launchctl bootout "system/$BL_LABEL" 2>/dev/null || true
+wait_gone "$BL_LABEL"
+if [ "$BLOCKLOG" -eq 1 ]; then
+  launchctl bootstrap system "/Library/LaunchDaemons/$BL_LABEL.plist" \
+    || echo "warning: could not start the block log daemon" >&2
+else
+  rm -f "/Library/LaunchDaemons/$BL_LABEL.plist" "$DIR/blocklog.py" "$DIR/blocklog.err" \
+        "$DIR/blocked.jsonl" "$DIR/blocked.jsonl.1"
+fi
 echo "[4/4] active anchor rules:"
 /sbin/pfctl -a "$ANCHOR" -sr 2>/dev/null | sed 's/^/   /'
 /sbin/pfctl -s info 2>/dev/null | head -1
 echo "check: sudo pfctl -a $ANCHOR -t ceg_anthropic -T test 160.79.104.10   (expect '1/1 addresses match')"
+[ "$BLOCKLOG" -eq 1 ] && echo "what was blocked: $SRC/blocked.py   (log: $DIR/blocked.jsonl)"
 echo "done. Undo: sudo sh $SRC/uninstall.sh"

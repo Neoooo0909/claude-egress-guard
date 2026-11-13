@@ -12,6 +12,17 @@ $CegManagedFile = Join-Path $CegManagedDir 'managed-settings.json'
 $CegOrigFile = "$CegManagedFile.ceg-orig"        # copy of the pre-install file
 $CegCreatedMarker = "$CegManagedFile.ceg-created" # the file did not exist before install
 
+# Block log: failure auditing of "Filtering Platform Connection" (Security event 5157) + a SYSTEM
+# task that copies the events of OUR rules to $CegDataDir\blocked.jsonl.
+$CegToolDir = Join-Path $CegProgramFiles 'ClaudeEgressGuard'   # admin-only: the task runs these as SYSTEM
+$CegDataDir = Join-Path $env:ProgramData 'ClaudeEgressGuard'   # ACL set by install.ps1
+$CegBlockTask = 'ClaudeEgressGuard-BlockLog'
+# Subcategory names are localized ("Filtering Platform Connection" is not found on e.g. a Chinese
+# Windows); the GUID is not.
+$CegAuditGuid = '{0CCE9226-69AE-11D9-BED3-505054503030}'
+$CegAuditOrig = Join-Path $CegToolDir 'audit.ceg-orig'          # pre-install setting value (0-3)
+$CegSecLogOrig = Join-Path $CegToolDir 'securitylog.ceg-orig'   # pre-install Security log max size
+
 # Every public address: the complement of loopback, RFC1918, CGNAT/Tailscale (100.64/10) and
 # link-local, plus IPv6 global unicast and the NAT64 prefixes (on IPv6-only networks with
 # DNS64, 64:ff9b::/96 reaches any IPv4 host). A program blocked to this list can only reach the
@@ -62,6 +73,26 @@ function Assert-CegAdmin {
   if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run this from an elevated PowerShell (Run as administrator), logged in as the Claude Code user.'
   }
+}
+
+function Get-CegAuditValue {
+  <# Numeric setting of the "Filtering Platform Connection" subcategory: 0 none, 1 success,
+     2 failure, 3 both. Read from an auditpol BACKUP file because "auditpol /get" prints only
+     localized words; the backup's last column is the number. #>
+  $f = Join-Path $env:TEMP "ceg-auditpol-$PID.csv"
+  try {
+    auditpol /backup /file:$f | Out-Null
+    $line = Get-Content $f | Where-Object { $_ -match [regex]::Escape($CegAuditGuid) } | Select-Object -First 1
+    if ($line -and ($line -split ',')[-1] -match '^\d$') { return [int](($line -split ',')[-1]) }
+    return 0
+  } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+}
+
+function Remove-CegDirectory {
+  <# Delete a directory without following junctions/symlinks inside it (Remove-Item -Recurse in
+     Windows PowerShell 5.1 may follow them); a link itself is removed, never its target. #>
+  param([string]$Path)
+  if (Test-Path -LiteralPath $Path) { cmd /c "rmdir /s /q `"$Path`"" 2>$null | Out-Null }
 }
 
 function Write-CegJsonNoBom {

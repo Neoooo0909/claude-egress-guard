@@ -8,6 +8,7 @@
 # because then the proxy core itself would try to reach these addresses.
 # pf out rules also apply to TUN's utun interface: with TUN but without fake-IP, programs that
 # rely on TUN alone (no proxy variables) cannot reach Anthropic — fail closed, as intended.
+# "log" copies refused packets to pflog0 for the block log daemon (blocklog.py).
 
 table <ceg_anthropic> const { @ANTHROPIC_RANGES@ }
-block return out quick proto { tcp, udp } from any to <ceg_anthropic>
+block return out log quick proto { tcp, udp } from any to <ceg_anthropic>

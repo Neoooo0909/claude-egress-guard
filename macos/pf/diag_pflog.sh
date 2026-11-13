@@ -1,7 +1,8 @@
 #!/bin/sh
-# claude-egress-guard — capture N seconds of blocked packets (run with sudo) to see WHO is
-# being blocked. Temporarily adds "log" to the block rules, captures pflog0, restores the rules
-# (also on Ctrl-C), and hands the capture file back to you.
+# claude-egress-guard — capture N seconds of blocked packets as a pcap (run with sudo).
+# For everyday use the block log daemon is simpler: ./macos/pf/blocked.py. This script is for raw
+# packet detail: it makes sure the block rules carry "log", captures pflog0, reloads the installed
+# rules (also on Ctrl-C), and hands the capture file back to you.
 #
 #   sudo sh macos/pf/diag_pflog.sh ./ceg.pcap 60
 #   tcpdump -n -e -r ./ceg.pcap | head
@@ -30,6 +31,7 @@ restore() {
 }
 trap restore EXIT INT TERM
 
+# rules installed by older versions have no "log" yet; current ones already do (no-op then)
 sed 's/^block return out quick/block return out log quick/' "$DIR/rules.conf" > "$TMP"
 ifconfig pflog0 >/dev/null 2>&1 || ifconfig pflog0 create
 /sbin/pfctl -a "$ANCHOR" -f "$TMP" 2>/dev/null

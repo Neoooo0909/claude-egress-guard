@@ -8,10 +8,15 @@ set -u
 DIR="/Library/Application Support/ClaudeEgressGuard"
 ANCHOR="com.apple/250.ClaudeEgressGuard"
 LABEL="io.github.claude-egress-guard.pf"
+BL_LABEL="io.github.claude-egress-guard.blocklog"
 MS="/Library/Application Support/ClaudeCode/managed-settings.json"
 
-# Stop the daemon BEFORE flushing, otherwise its next run would load the rules again
+# Stop the daemons BEFORE flushing, otherwise the next run of apply.sh would load the rules again;
+# bootout may return before a job has exited, so wait (max ~5 s each) before deleting its files
+wait_gone() { i=0; while launchctl print "system/$1" >/dev/null 2>&1 && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done; }
+launchctl bootout "system/$BL_LABEL" 2>/dev/null || true
 launchctl bootout "system/$LABEL" 2>/dev/null || true
+wait_gone "$BL_LABEL"; wait_gone "$LABEL"
 /sbin/pfctl -a "$ANCHOR" -F rules 2>/dev/null || true
 /sbin/pfctl -a "$ANCHOR" -F Tables 2>/dev/null || true
 
@@ -29,6 +34,6 @@ elif [ -f "$DIR/managed-settings.orig" ]; then
   echo "restored $MS to its pre-install content"
 fi
 
-rm -f "/Library/LaunchDaemons/$LABEL.plist"
+rm -f "/Library/LaunchDaemons/$LABEL.plist" "/Library/LaunchDaemons/$BL_LABEL.plist"
 rm -rf "$DIR"
-echo "uninstalled: daemon stopped, anchor $ANCHOR cleared."
+echo "uninstalled: daemons stopped, anchor $ANCHOR cleared, block log removed."

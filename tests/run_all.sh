@@ -13,7 +13,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' 2>&1 | tail -4
 [ "${PIPESTATUS[0]}" -eq 0 ] && ok unittest || bad unittest
 
 step "python syntax (parsed with the Python 3.8 grammar, then byte-compiled)"
-for f in guard/*.py tools/*.py; do
+for f in guard/*.py tools/*.py macos/pf/*.py; do
   python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read(), sys.argv[1], feature_version=(3, 8))' "$f" \
     && python3 -m py_compile "$f" && ok "$f" || bad "$f"
 done
@@ -40,6 +40,8 @@ if [ "$(uname -s)" = Darwin ]; then
     /sbin/pfctl -n -a com.apple/250.ClaudeEgressGuard -f "$T/$c.conf" >/dev/null 2>&1 && ok "$c.conf" || bad "$c.conf"
   done
   grep -q '@' "$T/full.conf" "$T/anth.conf" && bad "unrendered placeholder" || ok "no leftover placeholders"
+  # every block rule must carry "log" (the block log daemon reads pflog0)
+  grep '^block' "$T/full.conf" "$T/anth.conf" | grep -v -q ' log ' && bad "block rule without log" || ok "block rules log"
   rm -rf "$T"
 else
   echo "   skip (not macOS)"
@@ -49,7 +51,7 @@ step "generated proxy snippets"
 python3 tools/gen_proxy_rules.py --target all >/dev/null && ok gen_proxy_rules || bad gen_proxy_rules
 
 step "executable bits (documented commands must run as ./script)"
-for f in macos/pf/*.sh macos/statusline/*.sh tests/run_all.sh guard/*.py tools/*.py; do
+for f in macos/pf/*.sh macos/pf/blocked.py macos/statusline/*.sh tests/run_all.sh guard/*.py tools/*.py; do
   [ -x "$f" ] && ok "$f" || bad "$f not executable"
 done
 
